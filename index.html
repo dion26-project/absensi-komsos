@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Presensi KOMSOS - PK BSB</title>
+    <!-- Tailwind CSS untuk Styling -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- React & ReactDOM -->
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <!-- Babel untuk JSX -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+</head>
+<body class="bg-slate-100">
+    <div id="app-root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useRef } = React;
+
+        // Firebase Modules dari CDN (ES Modules tidak didukung Babel Standalone dengan mudah, 
+        // jadi kita gunakan compat build atau inisialisasi via script tag jika perlu, 
+        // tapi di sini kita simulasikan integrasi CDN standard)
+    </script>
+
+    <!-- Firebase App & Firestore via CDN -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
+        import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js";
+        import { getFirestore, collection, addDoc, serverTimestamp, onSnapshot } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
+
+        // Konfigurasi dari Environment
+        const firebaseConfig = JSON.parse(__firebase_config);
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'komsos-absensi-pk';
+
+        // Menempelkan ke window agar bisa diakses Babel script
+        window.fbCore = { auth, db, appId, collection, addDoc, serverTimestamp, onSnapshot, signInAnonymously, onAuthStateChanged };
+    </script>
+
+    <script type="text/babel">
+        function App() {
+            const [user, setUser] = useState(null);
+            const [view, setView] = useState('user'); 
+            const [adminPin, setAdminPin] = useState('');
+            const [pinError, setPinError] = useState(false);
+            const [loading, setLoading] = useState(false);
+            const [presensiList, setPresensiList] = useState([]);
+            const [selectedImage, setSelectedImage] = useState(null);
+            const [formData, setFormData] = useState({ nama: '', waktuAkses: '', tanggalAkses: '', foto: null });
+
+            const videoRef = useRef(null);
+            const canvasRef = useRef(null);
+            const [showCamera, setShowCamera] = useState(false);
+
+            useEffect(() => {
+                if (!window.fbCore) return;
+                const { auth, signInAnonymously, onAuthStateChanged } = window.fbCore;
+                
+                signInAnonymously(auth).catch(console.error);
+                const unsubscribe = onAuthStateChanged(auth, setUser);
+                return () => unsubscribe();
+            }, []);
+
+            useEffect(() => {
+                if (!user || view !== 'admin' || !window.fbCore) return;
+                const { db, appId, collection, onSnapshot } = window.fbCore;
+
+                const colRef = collection(db, 'artifacts', appId, 'public', 'data', 'presensi');
+                return onSnapshot(colRef, (snapshot) => {
+                    const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                    setPresensiList(data.sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0)));
+                });
+            }, [user, view]);
+
+            useEffect(() => {
+                if (view === 'user') {
+                    const now = new Date();
+                    setFormData(prev => ({
+                        ...prev,
+                        tanggalAkses: now.toLocaleDateString('id-ID', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }),
+                        waktuAkses: now.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' })
+                    }));
+                }
+            }, [view]);
+
+            const startCamera = async () => {
+                setShowCamera(true);
+                try {
+                    const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' } });
+                    if (videoRef.current) videoRef.current.srcObject = stream;
+                } catch (err) {
+                    alert("Gagal akses kamera.");
+                    setShowCamera(false);
+                }
+            };
+
+            const takePhoto = () => {
+                const video = videoRef.current;
+                const canvas = canvasRef.current;
+                if (video && canvas) {
+                    canvas.width = video.videoWidth;
+                    canvas.height = video.videoHeight;
+                    canvas.getContext('2d').drawImage(video, 0, 0);
+                    setFormData(prev => ({ ...prev, foto: canvas.toDataURL('image/jpeg') }));
+                    const stream = video.srcObject;
+                    if (stream) stream.getTracks().forEach(track => track.stop());
+                    setShowCamera(false);
+                }
+            };
+
+            const handleSubmit = async (e) => {
+                e.preventDefault();
+                if (!user || !formData.nama || !formData.foto || !window.fbCore) return;
+                setLoading(true);
+                const { db, appId, collection, addDoc, serverTimestamp } = window.fbCore;
+                try {
+                    await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'presensi'), {
+                        ...formData,
+                        createdAt: serverTimestamp(),
+                        userId: user.uid
+                    });
+                    setView('success');
+                } catch (err) {
+                    alert("Gagal kirim.");
+                } finally {
+                    setLoading(false);
+                }
+            };
+
+            const handleAdminAuth = (e) => {
+                e.preventDefault();
+                if (adminPin === '2468') { setView('admin'); setPinError(false); }
+                else { setPinError(true); }
+                setAdminPin('');
+            };
+
+            return (
+                <div className="min-h-screen pb-20 font-sans text-slate-900">
+                    <nav className="bg-blue-800 p-4 text-white flex justify-between items-center sticky top-0 z-10 shadow-md">
+                        <div onClick={() => setView('user')} className="cursor-pointer">
+                            <h1 className="font-bold text-lg">Presensi KOMSOS</h1>
+                            <p className="text-[10px] text-blue-200">Paroki Petrus Krisologus-BSB</p>
+                        </div>
+                        <button onClick={() => setView(view === 'user' ? 'login_admin' : 'user')} className="bg-blue-700 px-3 py-1.5 rounded-lg text-xs font-medium">
+                            {view === 'user' ? 'Admin' : 'Absen'}
+                        </button>
+                    </nav>
+
+                    <div className="max-w-md mx-auto mt-6 p-4">
+                        {view === 'login_admin' && (
+                            <div className="bg-white rounded-2xl shadow-xl p-8 border text-center space-y-6">
+                                <h2 className="text-xl font-bold text-slate-800">Verifikasi Admin</h2>
+                                <form onSubmit={handleAdminAuth} className="space-y-4">
+                                    <input 
+                                        type="password" 
+                                        placeholder="PIN 4 Digit" 
+                                        className={`w-full text-center text-2xl py-3 rounded-xl border-2 outline-none ${pinError ? 'border-red-500' : 'border-slate-200 focus:border-blue-500'}`}
+                                        value={adminPin}
+                                        onChange={e => setAdminPin(e.target.value)}
+                                        maxLength={4}
+                                    />
+                                    <button className="w-full py-4 bg-blue-600 text-white rounded-xl font-bold">Masuk</button>
+                                </form>
+                            </div>
+                        )}
+
+                        {view === 'user' && (
+                            <div className="bg-white rounded-2xl shadow-sm border overflow-hidden p-6 space-y-6">
+                                <div className="space-y-2">
+                                    <label className="text-sm font-semibold">Nama Lengkap</label>
+                                    <input required type="text" className="w-full px-4 py-3 rounded-xl border outline-none" placeholder="Nama petugas..." value={formData.nama} onChange={e => setFormData({...formData, nama: e.target.value})} />
+                                </div>
+                                <div className="grid grid-cols-2 gap-3 text-center">
+                                    <div className="p-3 bg-slate-50 rounded-xl border"><span className="text-[10px] block text-slate-400">Tanggal</span><span className="text-[11px] font-bold">{formData.tanggalAkses}</span></div>
+                                    <div className="p-3 bg-slate-50 rounded-xl border"><span className="text-[10px] block text-slate-400">Waktu</span><span className="text-[11px] font-bold">{formData.waktuAkses}</span></div>
+                                </div>
+                                <div className="space-y-3">
+                                    {!formData.foto && !showCamera && (
+                                        <button onClick={startCamera} className="w-full aspect-video border-2 border-dashed rounded-2xl flex flex-col items-center justify-center text-slate-400 hover:bg-slate-50">
+                                            <span className="text-xs">Ambil Foto Kehadiran</span>
+                                        </button>
+                                    )}
+                                    {showCamera && (
+                                        <div className="relative rounded-2xl overflow-hidden bg-black aspect-video">
+                                            <video ref={videoRef} autoPlay playsInline className="w-full h-full object-cover" />
+                                            <button onClick={takePhoto} className="absolute bottom-4 left-1/2 -translate-x-1/2 bg-white w-12 h-12 rounded-full border-4 border-blue-600"></button>
+                                        </div>
+                                    )}
+                                    {formData.foto && (
+                                        <div className="relative rounded-2xl overflow-hidden shadow-md">
+                                            <img src={formData.foto} className="w-full aspect-video object-cover" />
+                                            <button onClick={() => setFormData({...formData, foto: null})} className="absolute top-2 right-2 bg-red-500 text-white p-2 rounded-full">X</button>
+                                        </div>
+                                    )}
+                                    <canvas ref={canvasRef} className="hidden" />
+                                </div>
+                                <button onClick={handleSubmit} disabled={loading} className="w-full py-4 bg-blue-600 text-white rounded-xl font-bold shadow-lg disabled:opacity-50">
+                                    {loading ? 'Mengirim...' : 'Kirim Kehadiran'}
+                                </button>
+                            </div>
+                        )}
+
+                        {view === 'success' && (
+                            <div className="bg-white p-8 rounded-2xl shadow-xl text-center space-y-4 border">
+                                <h1 className="text-2xl font-bold text-slate-800">Terkirim!</h1>
+                                <p className="text-slate-600">Terima kasih atas pelayanan Anda.</p>
+                                <button onClick={() => setView('user')} className="w-full py-3 bg-blue-600 text-white rounded-lg font-semibold">Kembali</button>
+                            </div>
+                        )}
+
+                        {view === 'admin' && (
+                            <div className="space-y-4 pb-10">
+                                <h2 className="text-lg font-bold">Rekap Presensi ({presensiList.length})</h2>
+                                {presensiList.map(item => (
+                                    <div key={item.id} className="bg-white p-3 rounded-2xl shadow-sm border flex gap-4">
+                                        <img src={item.fotoBase64} className="w-20 h-20 rounded-xl object-cover" onClick={() => setSelectedImage(item.fotoBase64)} />
+                                        <div className="flex flex-col justify-center">
+                                            <h3 className="font-bold text-slate-800">{item.nama}</h3>
+                                            <p className="text-[11px] text-slate-500">{item.tanggal} - {item.jam}</p>
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+                    </div>
+
+                    {selectedImage && (
+                        <div className="fixed inset-0 z-50 bg-black/95 flex items-center justify-center p-4" onClick={() => setSelectedImage(null)}>
+                            <img src={selectedImage} className="max-w-full rounded-2xl" />
+                        </div>
+                    )}
+                </div>
+            );
+        }
+
+        const root = ReactDOM.createRoot(document.getElementById('app-root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
